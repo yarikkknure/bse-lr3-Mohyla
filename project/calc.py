@@ -2,197 +2,179 @@
 Модуль: Калькулятор витрат на no-code проєкти
 Автор: Могила Ярослав Романович, група ПЗПІ-25-4
 Дисципліна: Основи програмної інженерії
+ЛР 4: рефакторинг calc.py
 """
 
+from dataclasses import dataclass, field
 from datetime import datetime
+from enum import IntEnum
+from typing import Final
 
 
+# ── Перелік рівнів складності ─────────────────────────────────────────────────
+
+class Complexity(IntEnum):
+    LOW    = 1
+    MEDIUM = 2
+    HIGH   = 3
+
+
+# ── Константи модуля ──────────────────────────────────────────────────────────
+
+PLATFORM_RATES: Final[dict[str, int]] = {
+    "Webflow": 800,
+    "Bubble":  1200,
+    "Glide":   600,
+    "Make":    500,
+}
+
+COMPLEXITY_FACTORS: Final[dict[int, float]] = {
+    Complexity.LOW:    1.0,
+    Complexity.MEDIUM: 1.5,
+    Complexity.HIGH:   2.5,
+}
+
+COMPLEXITY_LABELS: Final[dict[int, str]] = {
+    Complexity.LOW:    "Низька",
+    Complexity.MEDIUM: "Середня",
+    Complexity.HIGH:   "Висока",
+}
+
+GUEST_LIMIT:  Final[int] = 3
+REPORT_WIDTH: Final[int] = 50
+
+
+# ── Структури даних ───────────────────────────────────────────────────────────
+
+@dataclass
+class CalculationRecord:
+    """Один запис розрахунку вартості."""
+    platforms:  list[str]
+    complexity: int
+    total_cost: float
+    timestamp:  str
+
+
+@dataclass
 class User:
     """
-    Клас, що представляє користувача системи.
+    Користувач системи.
 
     Ролі:
     - Гість (is_registered=False): ліміт GUEST_LIMIT розрахунків.
-    - Зареєстрований (is_registered=True): без ліміту, зберігається історія.
+    - Зареєстрований (is_registered=True): без ліміту, зберігається повна історія.
     """
 
-    GUEST_LIMIT = 3
+    username:     str
+    is_registered: bool = False
+    history:      list[CalculationRecord] = field(default_factory=list)
 
-    def __init__(self, username: str, is_registered: bool = False):
-        """
-        :param username: ім'я користувача (str).
-        :param is_registered: True — зареєстрований, False — гість.
-        """
-        if not username or not isinstance(username, str):
+    def __post_init__(self) -> None:
+        if not self.username or not isinstance(self.username, str):
             raise ValueError("username має бути непорожнім рядком.")
-        self.username: str = username
-        self.is_registered: bool = is_registered
-        self.calculation_history: list = []
-        self.calculation_count: int = 0
+
+    @property
+    def calculation_count(self) -> int:
+        """Кількість виконаних розрахунків — завжди дорівнює len(history)."""
+        return len(self.history)
 
     def can_calculate(self) -> bool:
         """
-        Повертає True, якщо користувач має право виконати розрахунок.
+        True якщо користувач може виконати ще один розрахунок.
         Зареєстрований — завжди True.
-        Гість — True, якщо calculation_count < GUEST_LIMIT.
+        Гість — True поки calculation_count < GUEST_LIMIT.
         """
         if self.is_registered:
             return True
-        return self.calculation_count < self.GUEST_LIMIT
+        return self.calculation_count < GUEST_LIMIT
 
-    def add_to_history(self, record: dict) -> None:
-        """
-        Зберігає запис розрахунку в history та збільшує лічильник.
-
-        :param record: dict із ключами platforms, complexity, total_cost, timestamp.
-        """
-        self.calculation_history.append(record)
-        self.calculation_count += 1
+    def add_to_history(self, record: CalculationRecord) -> None:
+        """Зберігає запис розрахунку в history."""
+        self.history.append(record)
 
 
-class ProjectCalculator:
+# ── Бізнес-логіка ─────────────────────────────────────────────────────────────
+
+def calculate_cost(platforms: list[str], complexity: int) -> float:
     """
-    Калькулятор вартості розробки no-code проєктів.
+    Розраховує вартість no-code проєкту.
 
-    Підтримує платформи: Webflow, Bubble, Glide, Make.
-    Складність: 1 (низька), 2 (середня), 3 (висока).
+    :param platforms: непорожній список платформ.
+    :param complexity: рівень складності (1 — низька, 2 — середня, 3 — висока).
+    :return: загальна вартість у USD.
+    :raises ValueError: якщо complexity поза діапазоном, platforms порожній,
+                        або зустрілась невідома платформа.
     """
+    if complexity < 0:
+        raise ValueError("Складність не може бути від'ємною.")
+    if complexity not in COMPLEXITY_FACTORS:
+        raise ValueError("Складність має бути від 1 до 3.")
+    if not platforms:
+        raise ValueError("Список платформ не може бути порожнім.")
 
-    COMPLEXITY_FACTORS = {
-        1: 1.0,
-        2: 1.5,
-        3: 2.5,
-    }
+    unknown = [p for p in platforms if p not in PLATFORM_RATES]
+    if unknown:
+        raise ValueError(f"Невідома платформа: {unknown}.")
 
-    def __init__(self):
-        """Ініціалізує базові тарифи платформ (USD)."""
-        self.platform_rates: dict = {
-            "Webflow": 800,
-            "Bubble":  1200,
-            "Glide":   600,
-            "Make":    500,
-        }
-
-    def calculate_cost(self, platforms_list: list, complexity: int) -> float:
-        """
-        Розраховує вартість проєкту.
-
-        Алгоритм: сума тарифів обраних платформ × коефіцієнт складності.
-
-        :param platforms_list: список платформ, наприклад ["Webflow", "Bubble"].
-        :param complexity: рівень складності 1..3.
-        :return: загальна вартість (float).
-        :raises ValueError: якщо platforms_list порожній, complexity від'ємний,
-                            complexity поза діапазоном або платформа невідома.
-        """
-        if not platforms_list:
-            raise ValueError("Список платформ не може бути порожнім.")
-
-        if complexity < 0:
-            raise ValueError("Складність не може бути від'ємною.")
-
-        if complexity not in self.COMPLEXITY_FACTORS:
-            raise ValueError(
-                f"Складність має бути від 1 до 3, отримано: {complexity}."
-            )
-
-        base_cost = 0.0
-        for platform in platforms_list:
-            if platform not in self.platform_rates:
-                raise ValueError(
-                    f"Невідома платформа: '{platform}'. "
-                    f"Доступні: {list(self.platform_rates.keys())}."
-                )
-            base_cost += self.platform_rates[platform]
-
-        return base_cost * self.COMPLEXITY_FACTORS[complexity]
-
-    def generate_report(self, user: User) -> str:
-        """
-        Генерує текстовий звіт на основі history користувача.
-
-        :param user: об'єкт User.
-        :return: форматований рядок звіту.
-        """
-        if not user.calculation_history:
-            return (
-                f"Звіт для користувача '{user.username}':\n"
-                "Історія розрахунків відсутня."
-            )
-
-        complexity_labels = {1: "Низька", 2: "Середня", 3: "Висока"}
-        lines = [
-            "=" * 50,
-            "  ЗВІТ: Калькулятор витрат на no-code проєкти",
-            f"  Користувач : {user.username}",
-            f"  Тип        : {'Зареєстрований' if user.is_registered else 'Гість'}",
-            f"  Розрахунків: {user.calculation_count}",
-            "=" * 50,
-        ]
-        for idx, rec in enumerate(user.calculation_history, start=1):
-            c = rec.get("complexity", "-")
-            lines += [
-                f"\n  Розрахунок #{idx}",
-                f"  Платформи  : {', '.join(rec.get('platforms', []))}",
-                f"  Складність : {complexity_labels.get(c, str(c))} ({c})",
-                f"  Вартість   : ${rec.get('total_cost', 0):.2f}",
-                f"  Дата       : {rec.get('timestamp', '—')}",
-            ]
-        lines.append("\n" + "=" * 50)
-        return "\n".join(lines)
+    base_cost = sum(PLATFORM_RATES[p] for p in platforms)
+    return base_cost * COMPLEXITY_FACTORS[complexity]
 
 
-def run_calculation(
-    user: User,
-    calculator: ProjectCalculator,
-    platforms_list: list,
-    complexity: int,
-) -> None:
+def generate_report(user: User) -> str:
     """
-    Виконує розрахунок від імені користувача з перевіркою ліміту.
+    Формує текстовий звіт по всіх розрахунках користувача.
 
     :param user: об'єкт User.
-    :param calculator: об'єкт ProjectCalculator.
-    :param platforms_list: список платформ.
-    :param complexity: рівень складності 1..3.
+    :return: відформатований рядок звіту.
+    """
+    sep = "=" * REPORT_WIDTH
+    user_type = "Зареєстрований" if user.is_registered else "Гість"
+
+    lines = [
+        sep,
+        f"Користувач: {user.username}",
+        f"Тип: {user_type}",
+        sep,
+    ]
+
+    if not user.history:
+        lines.append("Історія розрахунків відсутня.")
+    else:
+        for i, rec in enumerate(user.history, start=1):
+            complexity_label = COMPLEXITY_LABELS.get(rec.complexity, str(rec.complexity))
+            lines.append(f"Розрахунок #{i}")
+            lines.append(f"  Платформи:  {', '.join(rec.platforms)}")
+            lines.append(f"  Складність: {complexity_label}")
+            lines.append(f"  Вартість:   {rec.total_cost:.2f} USD")
+            lines.append(f"  Дата:       {rec.timestamp}")
+
+    lines.append(sep)
+    return "\n".join(lines)
+
+
+def run_calculation(user: User, platforms: list[str], complexity: int) -> None:
+    """
+    Виконує розрахунок для користувача і зберігає результат в history.
+
+    :param user: користувач.
+    :param platforms: список платформ.
+    :param complexity: рівень складності.
     """
     if not user.can_calculate():
-        print(
-            f"[!] Ліміт вичерпано для гостя '{user.username}'. "
-            "Зареєструйтесь для необмеженого доступу."
-        )
+        print("Ліміт вичерпано. Зареєструйтесь для необмеженого доступу.")
         return
 
-    cost = calculator.calculate_cost(platforms_list, complexity)
-    record = {
-        "platforms": platforms_list,
-        "complexity": complexity,
-        "total_cost": cost,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }
-    user.add_to_history(record)
-    print(
-        f"[✓] {', '.join(platforms_list)} | складність {complexity} | "
-        f"вартість: ${cost:.2f}"
+    try:
+        cost = calculate_cost(platforms, complexity)
+    except ValueError as exc:
+        print(f"Помилка вхідних даних: {exc}")
+        return
+
+    record = CalculationRecord(
+        platforms=platforms,
+        complexity=complexity,
+        total_cost=cost,
+        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     )
-
-
-if __name__ == "__main__":
-    calc = ProjectCalculator()
-
-    print("=== Гість (ліміт 3) ===")
-    guest = User("guest_user")
-    for pl, cx in [
-        (["Webflow"], 1),
-        (["Bubble", "Make"], 2),
-        (["Glide"], 3),
-        (["Webflow", "Bubble"], 1),  # 4-та — заблокована
-    ]:
-        run_calculation(guest, calc, pl, cx)
-    print(calc.generate_report(guest))
-
-    print("\n=== Зареєстрований ===")
-    reg = User("yaroslav_mohyla", is_registered=True)
-    run_calculation(reg, calc, ["Webflow", "Bubble", "Glide"], 3)
-    run_calculation(reg, calc, ["Make"], 1)
-    print(calc.generate_report(reg))
+    user.add_to_history(record)
+    print(f"Вартість проєкту: {cost:.2f} USD")
